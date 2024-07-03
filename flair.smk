@@ -21,49 +21,57 @@ RNAS = op.filter_samples(SAMPLES, seq_type = "promethION_mrna")
 ## import files; bam must be mimimap2 with -ax splice
 rule symlink_fastq_bam:
     input:
-        fq = "/projects/rmorin/projects/gambl-repos/gambl-kcoyle/data/promethION_fastq/mrna/{sample_id}.fastq.gz",
-        bam = "/projects/rmorin/projects/gambl-repos/gambl-kcoyle/data/promethION_bams/mrna/{sample_id}.hg38.bam"
+        fq = "/projects/rmorin/projects/gambl-repos/gambl-kcoyle/data/promethION_fastq/mrna/{sample_id}.fastq.gz"
     output:
-        fq = "01-inputs/fastq/{sample_id}.fq.gz",
-        bam = "01-inputs/bam/{sample_id}.bam"
+        fq = "00-inputs/fastq/{sample_id}.fq.gz",
+        bam = "00-inputs/bam/{sample_id}.bam"
     run:
         op.absolute_symlink(input.fq, output.fq)
         op.absolute_symlink(input.fq, output.fq)
 
 ## If your input sequences are Oxford nanopore reads, please use Pychopper before running Flair.
 ## Pychopper v2 is a tool to identify, orient and trim full-length Nanopore cDNA reads. The tool is also able to rescue fused reads.
+# we are using 2.7.9 and gz capabilities added in v2.6.0
+
+#try not specifying an output file. That should make pychopper write output to stdout so you can stream directly into gzip.
 
 rule pychopper:
     input:
-        fq = 
+        fq = str(rules.symlink_fastq_bam.output.fq)
     output:
-        report = 
-        unclassified_fq = 
-        rescued_fq = 
-        fq = 
-    conda:
+        report = "01-pychopper/reports/{sample_id}.pdf",
+        unclassified_fq = "01-pychopper/fastq/{sample_id}_unclassified.fq",
+        rescued_fq = "01-pychopper/fastq/{sample_id}_rescued.fq",
+        fq = "01-pychopper/fastq/{sample_id}_full_length.fq.gz"
+    conda: "/projects/rmorin_scratch/conda_environments/flair/pychopper.yaml"
     shell:
         op.as_one_line("""
-            pychopper -r report.pdf -u unclassified.fq -w rescued.fq input.fq full_length_output.fq
+            pychopper -r {output.pdf} -u {output.unclassified_fq} -w {output.rescued_fq} {input.fq} | gzip > {output.fq}
         """)
 
+ ## damn if we use pychopper I have to run minimap again
 
-rule bam_to_bed:
+rule flair_align:
     input:
-        bam = str(rules.symlink_fastq_bam.output.bam)
+        genome_fa = "/projects/rmorin_scratch/ONT_scratch/results/ref/GRCh38_no_alt.fa",
+        fq = str(rules.pychopper.output.fq)
     output:
-        bed = "02-bed12/{sample_id}.bed"
+        bam = "02-bed12/{sample_id}/flair.aligned.bam",
+        bai = "02-bed12/{sample_id}/flair.aligned.bam.bai",
+        bed = "02-bed12/{sample_id}/flair.aligned.bed",
     conda: "/projects/rmorin_scratch/conda_environments/flair/flair.yaml"
+    params:
+        threads = 24
     shell:
         op.as_one_line("""
-            bam2Bed12 -i {input.bam} > {output.bed}
+            flair align -g {input.genome_fa} -r {input.fq} --output 02-bed12/{sample_id}/ --threads {params.threads}
         """)
 
 
 ## how to make this output to specific directory? just called "flair_..." atm.
 rule flair_correct:
     input:
-        bed = str(rules.bam_to_bed.output.bed),
+        bed = str(rules.flair_align.output.bed),
         genome_gtf = "/projects/rmorin_scratch/ONT_scratch/results/ref/gencode.annotation.grch38.gtf".
         genome_fa = "/projects/rmorin_scratch/ONT_scratch/results/ref/GRCh38_no_alt.fa"
     output:
@@ -86,26 +94,28 @@ rule concat_bed:
         sample_id=CONTROLS['sample_id'])
     output:
         single_bed = 
+    conda:
+    shell:
+        op.as_one_line("""
+            
+        """)
 
 ## In addition, all raw read fastq/fasta files should either be specified after --reads with space/comma separators 
 ## or concatenated into a single file.
 rule flair_collapse:
     input:
-        bed = "",
+        bed = "../03-flair-correct/flair_all_corrected.bed",
         fq = "",
-        genome_fa = "",
-        genome_gtf = ""
+        genome_fa = "../../ref/GRCh38_no_alt.fa",
+        genome_gtf = "../../ref/gencode.annotation.grch38.gtf"
     output:
-        bed = ""
-        isoforms.bed
-
-isoforms.gtf
-
-isoforms.fa
+        bed = "isoforms.bed"
+        gtf = "isoforms.gtf"
+        fa = "isoforms.fa"
     conda: "/projects/rmorin_scratch/conda_environments/flair/flair.yaml"
     shell:
         op.as_one_line("""
-            flair collapse -g ../../ref/GRCh38_no_alt.fa -q ../03-flair-correct/flair_all_corrected.bed -r ../01-inputs/01-15563T.fastq.gz --gtf ../../ref/gencode.annotation.grch38.gtf
+            flair collapse -g {input.genome_fa} -q {input.bed} -r {input.fq} --gtf {input.genome_gtf}
             """)
 
 
