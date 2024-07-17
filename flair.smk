@@ -44,10 +44,12 @@ rule pychopper:
         unclassified_fq = "01-pychopper/fastq/{sample_id}_unclassified.fq",
         rescued_fq = "01-pychopper/fastq/{sample_id}_rescued.fq",
         fq = "01-pychopper/fastq/{sample_id}_full_length.fq.gz"
+    params:
+        threads = 24
     conda: "/projects/rmorin_scratch/ONT_scratch/results/flair/pychopper.yaml"
     shell:
         op.as_one_line("""
-            pychopper -r {output.report} -u {output.unclassified_fq} -w {output.rescued_fq} {input.fq} | gzip > {output.fq}
+            pychopper -r {output.report} -u {output.unclassified_fq} -w {output.rescued_fq} -t {params.threads} {input.fq} | gzip > {output.fq}
         """)
 
  ## damn if we use pychopper I have to run minimap again
@@ -55,19 +57,20 @@ rule pychopper:
 rule flair_align:
     input:
         genome_fa = "/projects/rmorin_scratch/ONT_scratch/results/ref/GRCh38_no_alt.fa",
-        fq = str(rules.pychopper.output.fq)
+        fq = "/projects/rmorin_scratch/ONT_scratch/results/flair/01-pychopper/fastq/{sample_id}_full_length.fq.gz"
     output:
         bam = "02-bed12/{sample_id}/flair.aligned.bam",
         bai = "02-bed12/{sample_id}/flair.aligned.bam.bai",
         bed = "02-bed12/{sample_id}/flair.aligned.bed",
     conda: "/projects/rmorin_scratch/ONT_scratch/results/flair/flair.yaml"
     params:
-        threads = 24
+        threads = 36
     shell:
         op.as_one_line("""
-            flair align -g {input.genome_fa} -r {input.fq} --output 02-bed12/{wildcards.sample_id}/ --threads {params.threads}
+            cd 02-bed12/{wildcards.sample_id} &&
+            flair align -g {input.genome_fa} -r {input.fq} --threads {params.threads}
         """)
-
+## not sure where this is being output???
 
 ## how to make this output to specific directory? just called "flair_..." atm.
 rule flair_correct:
@@ -82,7 +85,8 @@ rule flair_correct:
     conda: "/projects/rmorin_scratch/ONT_scratch/results/flair/flair.yaml"
     shell:
         op.as_one_line("""
-            flair correct -q {input.bed} -f {input.genome_gtf} -g {input.genome_fa} --output 03-flair-correct/{wildcards.sample_id}/
+            cd 03-flair-correct/{wildcards.sample_id} &&
+            flair correct -q {input.bed} -f {input.genome_gtf} -g {input.genome_fa}
         """)
 
 ## This needs to include all samples
@@ -95,18 +99,20 @@ rule concat_bed:
         sample_id=SAMPLES['sample_id'])
     output:
         single_bed = "bed.bed"
-    conda: "/projects/rmorin_scratch/ONT_scratch/results/flair/flair.yaml"
+    conda: "/projects/rmorin_scratch/ONT_scratch/results/flair/bedtools.yaml"
     shell:
         op.as_one_line("""
-            cat {input.all_beds} | sort -u
+            cat {input.all_beds} | sort -k 1,1 -k2,2n | bedtools merge > {single_bed}
         """)
 
 ## In addition, all raw read fastq/fasta files should either be specified after --reads with space/comma separators 
 ## or concatenated into a single file.
 rule flair_collapse:
     input:
-        bed = "../03-flair-correct/flair_all_corrected.bed",
-        fq = "",
+        bed = str(rules.concat_bed.output.bed),,
+        all_reads = expand(str(rules.pychopper.output.fq), 
+        zip,
+        sample_id=SAMPLES['sample_id']),
         genome_fa = "../../ref/GRCh38_no_alt.fa",
         genome_gtf = "../../ref/gencode.annotation.grch38.gtf"
     output:
@@ -135,6 +141,6 @@ rule flair_quantify:
 
 rule all:
     input:
-        expand(rules.flair_correct.output.corrected_bed,
+        expand(rules.flair_align.output.bed,
         zip,
         sample_id=SAMPLES['sample_id'])
